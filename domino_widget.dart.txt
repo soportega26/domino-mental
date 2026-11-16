@@ -1,0 +1,88 @@
+import 'package:flutter/material.dart';
+
+class DominoWidget extends StatelessWidget {
+  final int left;
+  final int right;
+
+  const DominoWidget({
+    super.key,
+    required this.left,
+    required this.right,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 0.5,
+      child: Container(
+        margin: const EdgeInsets.all(4),
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.black),
+          boxShadow: const [
+            BoxShadow(
+              blurRadius: 4,
+              offset: Offset(2, 2),
+              color: Colors.black26,
+            )
+          ],
+        ),
+        child: Column(
+          children: [
+            Expanded(child: _dots(left)),
+            const Divider(color: Colors.black, thickness: 2),
+            Expanded(child: _dots(right)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dots(int value) {
+    Widget dot() => Container(
+          width: 6,
+          height: 6,
+          decoration: const BoxDecoration(
+            color: Colors.black,
+            shape: BoxShape.circle,
+          ),
+        );
+
+    Widget empty() => const SizedBox(width: 6, height: 6);
+
+    List<List<Widget>> grid = [
+      [empty(), empty(), empty()],
+      [empty(), empty(), empty()],
+      [empty(), empty(), empty()],
+    ];
+
+    switch (value) {
+      case 1: grid[1][1] = dot(); break;
+      case 2: grid[0][0] = dot(); grid[2][2] = dot(); break;
+      case 3: grid[0][0] = dot(); grid[1][1] = dot(); grid[2][2] = dot(); break;
+      case 4:
+        grid[0][0] = dot(); grid[0][2] = dot();
+        grid[2][0] = dot(); grid[2][2] = dot(); break;
+      case 5:
+        grid[0][0] = dot(); grid[0][2] = dot();
+        grid[1][1] = dot();
+        grid[2][0] = dot(); grid[2][2] = dot(); break;
+      case 6:
+        grid[0][0] = dot(); grid[0][2] = dot();
+        grid[1][0] = dot(); grid[1][2] = dot();
+        grid[2][0] = dot(); grid[2][2] = dot(); break;
+    }
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: grid.map((row) {
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: row,
+        );
+      }).toList(),
+    );
+  }
+}

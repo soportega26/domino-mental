@@ -1,0 +1,720 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart'; // 👈 AdMob
+
+import '../game/domino_piece.dart';
+import '../game/game_logic.dart';
+import '../game/game_timer.dart';
+import '../widgets/domino_widget.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  GameTimer? timer;
+
+  int timeLeft = 40;
+  int bestTime = 0;
+  int currentLevel = 1;
+  final int maxLevel = 50;
+  int correctAnswersInLevel = 0;
+
+  bool isLocked = false;
+
+  List<int> topTimes = [];
+  List<DominoPiece> pieces = [];
+
+  final TextEditingController controller = TextEditingController();
+  String resultMessage = "";
+
+  // =========================
+  // VARIABLES DE ADMOB
+  // =========================
+  BannerAd? _bannerAd;
+  bool _isBannerLoaded = false;
+  InterstitialAd? _interstitialAd;
+  int _roundCountForAds = 0; // Contador para controlar la frecuencia de anuncios
+
+  @override
+  void initState() {
+    super.initState();
+    _initApp();
+    _loadBannerAd();
+    _loadInterstitialAd();
+  }
+
+  Future<void> _initApp() async {
+    await loadRecords();
+    if (mounted) {
+      newRound();
+    }
+  }
+
+  // =========================
+  // CARGA DE ANUNCIOS
+  // =========================
+
+  void _loadBannerAd() {
+    _bannerAd = BannerAd(
+      // ID de prueba de Google (reemplazar por ID real en producción)
+      adUnitId: 'ca-app-pub-3940256099942544/6300978111',
+      request: const AdRequest(),
+      size: AdSize.banner,
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          setState(() {
+            _isBannerLoaded = true;
+          });
+        },
+        onAdFailedToLoad: (ad, err) {
+          ad.dispose();
+        },
+      ),
+    )..load();
+  }
+
+  void _loadInterstitialAd() {
+    InterstitialAd.load(
+      // ID de prueba de Google (reemplazar por ID real en producción)
+      adUnitId: 'ca-app-pub-3940256099942544/1033173712',
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          _interstitialAd = ad;
+        },
+        onAdFailedToLoad: (err) {
+          _interstitialAd = null;
+        },
+      ),
+    );
+  }
+
+  void _showInterstitialAdIfNeeded() {
+    _roundCountForAds++;
+    // Muestra un anuncio cada 3 rondas finalizadas (completadas o perdidas)
+    if (_roundCountForAds >= 3) {
+      if (_interstitialAd != null) {
+        _interstitialAd!.show();
+        _interstitialAd = null;
+        _loadInterstitialAd(); // Recarga el siguiente anuncio
+        _roundCountForAds = 0;
+      }
+    }
+  }
+
+  // =========================
+  // GENERAR FICHAS
+  // =========================
+
+  List<DominoPiece> generateFullSet() {
+    List<DominoPiece> set = [];
+    for (int i = 0; i <= 6; i++) {
+      for (int j = i; j <= 6; j++) {
+        set.add(DominoPiece(i, j));
+      }
+    }
+    return set;
+  }
+
+  List<DominoPiece> getRandomPieces() {
+    List<DominoPiece> set = generateFullSet();
+    set.shuffle();
+    int count = getPiecesForLevel();
+    return set.take(count).toList();
+  }
+
+  // =========================
+  // REGISTROS (PERSISTENCIA)
+  // =========================
+
+  Future<void> saveRecords() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      'topTimes',
+      topTimes.map((e) => e.toString()).toList(),
+    );
+    await prefs.setInt('currentLevel', currentLevel);
+    await prefs.setInt('correctAnswersInLevel', correctAnswersInLevel);
+  }
+
+  Future<void> loadRecords() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      currentLevel = prefs.getInt('currentLevel') ?? 1;
+      correctAnswersInLevel = prefs.getInt('correctAnswersInLevel') ?? 0;
+      final stored = prefs.getStringList('topTimes');
+      if (stored != null) {
+        topTimes = stored.map((e) => int.parse(e)).toList();
+        if (topTimes.isNotEmpty) {
+          bestTime = topTimes.first;
+        }
+      }
+    });
+  }
+
+  Future<void> resetProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('currentLevel', 1);
+    await prefs.setInt('correctAnswersInLevel', 0);
+
+    setState(() {
+      currentLevel = 1;
+      correctAnswersInLevel = 0;
+    });
+
+    newRound();
+  }
+
+  int getRequiredAnswers() {
+    if (currentLevel <= 5) return 3;
+    if (currentLevel <= 15) return 4;
+    if (currentLevel <= 25) return 5;
+    if (currentLevel <= 35) return 6;
+    if (currentLevel <= 45) return 8;
+    return 10;
+  }
+
+  int getPiecesForLevel() {
+    if (currentLevel <= 3) return 3;
+    if (currentLevel <= 6) return 4;
+    if (currentLevel <= 9) return 5;
+    if (currentLevel <= 12) return 6;
+    if (currentLevel <= 15) return 7;
+    if (currentLevel <= 20) return 8;
+    if (currentLevel <= 30) return 10;
+    if (currentLevel <= 40) return 12;
+    return 14;
+  }
+
+  int getTimeForLevel() {
+    int time = 40 - (currentLevel - 1);
+    if (time < 15) time = 15;
+    return time;
+  }
+
+  // =========================
+  // VER MEJORES TIEMPOS
+  // =========================
+
+  void showTopScores() {
+    showDialog(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text("🏆 Mejores tiempos"),
+          content: topTimes.isEmpty
+              ? const Text("Sin registros aún")
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: topTimes
+                      .asMap()
+                      .entries
+                      .map(
+                        (e) => ListTile(
+                          leading: Text("#${e.key + 1}"),
+                          title: Text("${e.value} s restantes"),
+                        ),
+                      )
+                      .toList(),
+                ),
+        );
+      },
+    );
+  }
+
+  // =========================
+  // NUEVA RONDA
+  // =========================
+
+  void newRound() {
+    if (!mounted) return;
+
+    timer?.stop();
+    final newPieces = getRandomPieces();
+
+    setState(() {
+      pieces = newPieces;
+      controller.clear();
+      resultMessage = "";
+      timeLeft = getTimeForLevel();
+      isLocked = false;
+    });
+
+    timer = GameTimer(getTimeForLevel());
+
+    timer!.onTick = (seconds) {
+      if (!mounted) return;
+      setState(() {
+        timeLeft = seconds;
+      });
+    };
+
+    timer!.onFinish = () {
+      if (!mounted) return;
+
+      timer?.stop();
+      correctAnswersInLevel = 0;
+      saveRecords();
+
+      setState(() {
+        resultMessage = "⛔ Tiempo agotado\nProgreso del nivel reiniciado";
+        isLocked = true;
+      });
+
+      _showInterstitialAdIfNeeded(); // Muestra anuncio si aplica
+
+      Future.delayed(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        newRound();
+      });
+    };
+
+    timer!.start();
+  }
+
+  // =========================
+  // VERIFICAR RESPUESTA
+  // =========================
+
+  Future<void> checkAnswer() async {
+    if (isLocked || controller.text.isEmpty) return;
+
+    final userAnswer = int.tryParse(controller.text);
+    if (userAnswer == null) {
+      setState(() {
+        resultMessage = "⚠️ Ingresa un número";
+      });
+      return;
+    }
+
+    final correct = calculateTotal(pieces);
+    timer?.stop();
+
+    setState(() {
+      isLocked = true;
+    });
+
+    if (userAnswer == correct) {
+      correctAnswersInLevel++;
+
+      if (correctAnswersInLevel >= getRequiredAnswers()) {
+        if (currentLevel < maxLevel) {
+          currentLevel++;
+          correctAnswersInLevel = 0;
+          await saveRecords();
+
+          if (!mounted) return;
+
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => AlertDialog(
+              title: const Text("🎉 ¡Nivel completado!"),
+              content: Text("Has alcanzado el nivel $currentLevel"),
+            ),
+          );
+
+          _showInterstitialAdIfNeeded(); // Muestra anuncio al subir de nivel
+
+          Future.delayed(const Duration(seconds: 2), () {
+            if (!mounted) return;
+            Navigator.of(context).pop();
+            newRound();
+          });
+          return;
+        }
+      }
+
+      await saveRecords();
+      setState(() {
+        resultMessage = "✅ ¡Correcto! ($correctAnswersInLevel/${getRequiredAnswers()})";
+      });
+    } else {
+      correctAnswersInLevel = 0;
+      await saveRecords();
+
+      setState(() {
+        resultMessage = "❌ Incorrecto (Era: $correct)\nProgreso reiniciado";
+      });
+
+      _showInterstitialAdIfNeeded(); // Muestra anuncio al fallar
+    }
+
+    Future.delayed(const Duration(seconds: 2), () {
+      if (!mounted) return;
+      newRound();
+    });
+  }
+
+  // =========================
+  // MESA DE JUEGO
+  // =========================
+
+  Widget buildDominoTable() {
+    double tableHeight;
+    if (pieces.length <= 6) {
+      tableHeight = 140;
+    } else if (pieces.length <= 10) {
+      tableHeight = 210;
+    } else {
+      tableHeight = 310;
+    }
+
+    return Container(
+      width: double.infinity,
+      height: tableHeight,
+      margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF8D5B4C),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: const [
+          BoxShadow(color: Colors.black45, blurRadius: 6, offset: Offset(0, 3)),
+        ],
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFE8DCC4),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            double pieceWidth;
+            if (pieces.length <= 5) {
+              pieceWidth = 52;
+            } else if (pieces.length <= 8) {
+              pieceWidth = 44;
+            } else if (pieces.length <= 12) {
+              pieceWidth = 38;
+            } else {
+              pieceWidth = 34;
+            }
+
+            return Center(
+              child: SingleChildScrollView(
+                child: Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 4,
+                  runSpacing: 6,
+                  children: pieces.map((p) {
+                    return SizedBox(
+                      width: pieceWidth,
+                      height: pieceWidth * 2,
+                      child: DominoWidget(left: p.left, right: p.right),
+                    );
+                  }).toList(),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // =========================
+  // TECLADO NUMÉRICO EN PANTALLA
+  // =========================
+
+  Widget buildCustomKeypad() {
+    void onKeyTap(String value) {
+      if (isLocked) return;
+      HapticFeedback.lightImpact();
+      setState(() {
+        if (controller.text.length < 4) {
+          controller.text += value;
+        }
+      });
+    }
+
+    void onDelete() {
+      if (isLocked || controller.text.isEmpty) return;
+      HapticFeedback.lightImpact();
+      setState(() {
+        controller.text = controller.text.substring(0, controller.text.length - 1);
+      });
+    }
+
+    Widget buildKey(String label, {VoidCallback? onTap, Color? color}) {
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.all(3.0),
+          child: ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: color ?? Colors.white.withValues(alpha: 0.9),
+              foregroundColor: Colors.black87,
+              elevation: 2,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onPressed: onTap ?? () => onKeyTap(label),
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            buildKey("1"),
+            buildKey("2"),
+            buildKey("3"),
+          ],
+        ),
+        Row(
+          children: [
+            buildKey("4"),
+            buildKey("5"),
+            buildKey("6"),
+          ],
+        ),
+        Row(
+          children: [
+            buildKey("7"),
+            buildKey("8"),
+            buildKey("9"),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(3.0),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent.shade100,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: onDelete,
+                  child: const Icon(Icons.backspace, size: 22),
+                ),
+              ),
+            ),
+            buildKey("0"),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(3.0),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: isLocked ? null : checkAnswer,
+                  child: const Icon(Icons.check, size: 24),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  @override
+  void dispose() {
+    timer?.stop();
+    controller.dispose();
+    _bannerAd?.dispose();
+    _interstitialAd?.dispose();
+    super.dispose();
+  }
+
+  // =========================
+  // UI PRINCIPAL
+  // =========================
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          image: DecorationImage(
+            image: const AssetImage('assets/images/wood_bg.jpg'),
+            fit: BoxFit.cover,
+            colorFilter: ColorFilter.mode(
+              Colors.brown.withValues(alpha: 0.35),
+              BlendMode.darken,
+            ),
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // BARRA SUPERIOR
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.exit_to_app, color: Colors.white),
+                      onPressed: () => SystemNavigator.pop(),
+                    ),
+                    Row(
+                      children: [
+                        Image.asset('assets/images/logo.png', width: 30, height: 30),
+                        const SizedBox(width: 8),
+                        const Text(
+                          "Dominó Mental",
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.emoji_events, color: Colors.amber),
+                          onPressed: showTopScores,
+                          tooltip: "Mejores Tiempos",
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.restart_alt, color: Colors.white),
+                          onPressed: resetProgress,
+                          tooltip: "Reiniciar Progreso",
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              // INDICADORES DE NIVEL Y TIEMPO
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "⏱️ $timeLeft s",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(
+                      "🎯 Nivel $currentLevel/$maxLevel",
+                      style: const TextStyle(
+                        color: Colors.amber,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(
+                      "✅ $correctAnswersInLevel/${getRequiredAnswers()}",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // BARRA DE TIEMPO
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: LinearProgressIndicator(
+                    value: timeLeft / getTimeForLevel(),
+                    minHeight: 8,
+                    color: timeLeft < 6 ? Colors.redAccent : Colors.greenAccent,
+                    backgroundColor: Colors.white24,
+                  ),
+                ),
+              ),
+
+              // MESA CON FICHAS
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                  child: buildDominoTable(),
+                ),
+              ),
+
+              // MENSAJE DE RESULTADO
+              if (resultMessage.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4.0),
+                  child: Text(
+                    resultMessage,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: resultMessage.contains("✅")
+                          ? Colors.greenAccent
+                          : Colors.yellowAccent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+
+              // CAMPO DE MUESTRA DE LA SUMA
+              Container(
+                width: 180,
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.amber, width: 2),
+                ),
+                child: Text(
+                  controller.text.isEmpty ? "Suma..." : controller.text,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: controller.text.isEmpty ? Colors.grey : Colors.black87,
+                  ),
+                ),
+              ),
+
+              // TECLADO INTEGRADOR EN PANTALLA
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+                child: buildCustomKeypad(),
+              ),
+
+              // BANNER ADMOB EN LA PARTE INFERIOR
+              if (_isBannerLoaded && _bannerAd != null)
+                Container(
+                  color: Colors.black26,
+                  width: _bannerAd!.size.width.toDouble(),
+                  height: _bannerAd!.size.height.toDouble(),
+                  child: AdWidget(ad: _bannerAd!),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
